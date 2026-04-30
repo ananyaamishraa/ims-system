@@ -2,30 +2,101 @@
 <html>
 <head>
     <title>IMS Dashboard</title>
+    <style>
+        body {
+            font-family: Arial;
+            margin: 20px;
+        }
+
+        .incident {
+            border: 1px solid #333;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+        }
+
+        .P0 { background: #ffcccc; }
+        .P1 { background: #ffe5cc; }
+        .P2 { background: #fff6cc; }
+        .P3 { background: #e6ffe6; }
+
+        button {
+            margin-right: 5px;
+            margin-top: 5px;
+        }
+
+        #detailBox {
+            border: 2px solid black;
+            padding: 10px;
+            margin-top: 20px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 60px;
+        }
+
+        input {
+            width: 100%;
+            margin-bottom: 5px;
+        }
+    </style>
 </head>
+
 <body>
 
-<h1>Incident Dashboard</h1>
+<h1>🚨 Incident Management System</h1>
 
-<button onclick="loadIncidents()">Load Incidents</button>
+<button onclick="loadIncidents()">Refresh</button>
 
 <div id="incidents"></div>
 
+<!-- INCIDENT DETAIL -->
+<div id="detailBox" style="display:none;">
+    <h2>Incident Detail</h2>
+    <div id="detailContent"></div>
+
+    <h3>Submit RCA</h3>
+
+    <input id="root_cause" placeholder="Root Cause" />
+    <input id="fix_applied" placeholder="Fix Applied" />
+    <textarea id="prevention" placeholder="Prevention Steps"></textarea>
+
+    <button onclick="submitRCA()">Submit RCA</button>
+</div>
+
 <script>
+
+let selectedIncident = null;
+
+// -------------------------
+// AUTO REFRESH (LIVE DASHBOARD)
+// -------------------------
+setInterval(loadIncidents, 4000);
+
+// -------------------------
+// LOAD INCIDENTS
+// -------------------------
 async function loadIncidents() {
     const res = await fetch("http://127.0.0.1:8000/incidents");
-    const data = await res.json();
+    let data = await res.json();
+
+    // SORT by severity (P0 highest priority)
+    const order = { "P0": 1, "P1": 2, "P2": 3, "P3": 4 };
+    data.sort((a, b) => order[a.severity] - order[b.severity]);
 
     let html = "";
 
     data.forEach(i => {
         html += `
-            <div style="border:1px solid black; margin:10px; padding:10px;">
-                <p>ID: ${i.id}</p>
-                <p>Component: ${i.component_id}</p>
-                <p>Status: ${i.status}</p>
-                <p>Severity: ${i.severity}</p>
+            <div class="incident ${i.severity}">
+                <b>ID:</b> ${i.id} <br>
+                <b>Component:</b> ${i.component_id} <br>
+                <b>Status:</b> ${i.status} <br>
+                <b>Severity:</b> ${i.severity} <br>
+                <b>MTTR:</b> ${i.mttr_seconds || "-"} sec <br>
 
+                <button onclick="viewIncident(${i.id})">View</button>
                 <button onclick="updateStatus(${i.id}, 'INVESTIGATING')">Investigate</button>
                 <button onclick="updateStatus(${i.id}, 'RESOLVED')">Resolve</button>
                 <button onclick="closeIncident(${i.id})">Close</button>
@@ -36,35 +107,88 @@ async function loadIncidents() {
     document.getElementById("incidents").innerHTML = html;
 }
 
+// -------------------------
+// VIEW INCIDENT DETAIL
+// -------------------------
+async function viewIncident(id) {
+    const res = await fetch("http://127.0.0.1:8000/incidents");
+    const data = await res.json();
+
+    const incident = data.find(i => i.id === id);
+    selectedIncident = id;
+
+    document.getElementById("detailBox").style.display = "block";
+
+    document.getElementById("detailContent").innerHTML = `
+        <p><b>ID:</b> ${incident.id}</p>
+        <p><b>Component:</b> ${incident.component_id}</p>
+        <p><b>Status:</b> ${incident.status}</p>
+        <p><b>Severity:</b> ${incident.severity}</p>
+        <p><b>Start:</b> ${incident.start_time}</p>
+        <p><b>End:</b> ${incident.end_time || "-"}</p>
+    `;
+}
+
+// -------------------------
+// STATUS UPDATE
+// -------------------------
 async function updateStatus(id, status) {
     await fetch(`http://127.0.0.1:8000/incidents/${id}/status?new_status=${status}`, {
         method: "PUT"
     });
+
     loadIncidents();
 }
 
+// -------------------------
+// CLOSE INCIDENT FLOW
+// -------------------------
 async function closeIncident(id) {
-    const root_cause = prompt("Root cause?");
-    const fix = prompt("Fix applied?");
-    const prevention = prompt("Prevention?");
+    selectedIncident = id;
 
-    await fetch(`http://127.0.0.1:8000/incidents/${id}/rca`, {
+    document.getElementById("detailBox").style.display = "block";
+
+    alert("Please fill RCA in the form below before closing.");
+}
+
+// -------------------------
+// SUBMIT RCA
+// -------------------------
+async function submitRCA() {
+
+    const root_cause = document.getElementById("root_cause").value;
+    const fix_applied = document.getElementById("fix_applied").value;
+    const prevention = document.getElementById("prevention").value;
+
+    if (!root_cause || !fix_applied) {
+        alert("RCA incomplete!");
+        return;
+    }
+
+    await fetch(`http://127.0.0.1:8000/incidents/${selectedIncident}/rca`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             root_cause,
-            fix_applied: fix,
+            fix_applied,
             prevention
         })
     });
 
-    await fetch(`http://127.0.0.1:8000/incidents/${id}/status?new_status=CLOSED`, {
+    await fetch(`http://127.0.0.1:8000/incidents/${selectedIncident}/status?new_status=CLOSED`, {
         method: "PUT"
     });
 
+    alert("Incident Closed Successfully");
+
+    document.getElementById("detailBox").style.display = "none";
+
     loadIncidents();
 }
+
+loadIncidents();
+
 </script>
 
 </body>
-</html> 
+</html>
