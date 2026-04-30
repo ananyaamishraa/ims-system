@@ -1,100 +1,94 @@
 import time
+import datetime
 from redis import Redis
 from pymongo import MongoClient
 from db_config import SessionLocal
 from models import Incident
+from strategy import get_alert_strategy
 
 # -------------------------
-# OBSERVABILITY (signals/sec)
+# CONNECTIONS (Docker-safe)
 # -------------------------
-signal_count = 0
-start_time = time.time()
+redis_conn = Redis(host="redis", port=6379, decode_responses=True)
 
-# Redis
-redis_conn = Redis(host="localhost", port=6379)
-
-# MongoDB
-mongo_client = MongoClient("mongodb://localhost:27017/")
+mongo_client = MongoClient("mongodb://mongodb:27017/")
 mongo_db = mongo_client["ims_db"]
 signals_collection = mongo_db["signals"]
 
 # -------------------------
-# STRATEGY PATTERN
+# METRICS
 # -------------------------
-def get_severity(component_id):
-    if "RDBMS" in component_id:
-        return "P0"
-    elif "CACHE" in component_id:
-        return "P2"
-    elif "API" in component_id:
-        return "P1"
-    else:
-        return "P3"
+signal_count = 0
+start_time = time.time()
 
 # -------------------------
-# RETRY LOGIC
+# RETRY
 # -------------------------
-def save_incident_with_retry(db, incident, retries=3):
-    for attempt in range(retries):
+def retry(fn, retries=3):
+    for i in range(retries):
         try:
-            db.add(incident)
-            db.commit()
-            return True
+            return fn()
         except Exception as e:
-            db.rollback()
-            print(f"Retry {attempt+1} failed:", e)
+            print(f"[RETRY {i+1}] {e}")
             time.sleep(1)
-
-    print("Failed to save incident after retries")
-    return False
+    return None
 
 # -------------------------
-# MAIN WORKER FUNCTION
+# DEBOUNCE (FIXED)
+# -------------------------
+def is_duplicate(component_id):
+    key = f"debounce:{component_id}"
+    count = redis_conn.incr(key)
+    redis_conn.expire(key, 10)
+    return count > 1
+
+# -------------------------
+# MAIN WORKER
 # -------------------------
 def process_signal(signal):
     global signal_count, start_time
 
-    # Observability logging
     signal_count += 1
+
     if time.time() - start_time >= 5:
-        print(f"Signals/sec: {signal_count / 5}")
+        print(f"📊 Signals/sec: {signal_count / 5}")
         signal_count = 0
         start_time = time.time()
 
     component_id = signal.get("component_id")
 
-    # Strategy pattern used here
-    severity = get_severity(component_id)
-
-    # 1. Store raw signal in MongoDB
+    # 1. RAW LOG (MongoDB)
     signals_collection.insert_one(signal)
 
-    # 2. Debounce logic
-    current_window = int(time.time() / 10)
-    key = f"debounce:{component_id}:{current_window}"
+    # 2. DEBOUNCE
+    if is_duplicate(component_id):
+        print(f"⛔ Debounced: {component_id}")
+        return
+
+    # 3. STRATEGY
+    strategy = get_alert_strategy(component_id)
+    severity = strategy.severity()
 
     db = SessionLocal()
 
-    if redis_conn.exists(key):
-        print(f"[DEBOUNCED] Existing incident for {component_id}")
-    else:
-        redis_conn.set(key, "1", ex=10)
-
-        # Create incident
+    # 4. CREATE INCIDENT
+    def create():
         incident = Incident(
             component_id=component_id,
             severity=severity,
-            status="OPEN"
+            status="OPEN",
+            start_time=datetime.datetime.utcnow()
         )
+        db.add(incident)
+        db.commit()
+        db.refresh(incident)
+        return incident
 
-        success = save_incident_with_retry(db, incident)
+    incident = retry(create)
 
-        if success:
-            print(f"[NEW INCIDENT] Stored in DB for {component_id}")
+    if incident:
+        print(f"🟢 Incident created: {incident.id}")
 
-            # Cache (hot path)
-            redis_conn.set(f"incident:{incident.id}", "ACTIVE")
+        redis_conn.set(f"incident:{incident.id}", "ACTIVE", ex=3600)
 
     db.close()
-
-    print("Signal stored in MongoDB:", signal)
