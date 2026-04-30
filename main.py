@@ -3,9 +3,9 @@ from queue_config import queue
 from db_config import SessionLocal
 from models import Incident
 from datetime import datetime
+
 from fastapi.middleware.cors import CORSMiddleware
 
-# Rate limiting
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -14,130 +14,115 @@ from fastapi.responses import JSONResponse
 app = FastAPI()
 
 # -------------------------
-# CORS (for frontend)
+# CORS
 # -------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # -------------------------
-# RATE LIMITING SETUP
+# RATE LIMITING
 # -------------------------
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)
 def rate_limit_handler(request: Request, exc):
-    return JSONResponse(
-        status_code=429,
-        content={"error": "Rate limit exceeded"}
-    )
+    return JSONResponse(status_code=429, content={"error": "rate limit exceeded"})
 
 # -------------------------
-# HEALTH CHECK
+# HEALTH
 # -------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 # -------------------------
-# INGEST SIGNAL (QUEUE)
+# SIGNAL INGESTION
 # -------------------------
 @app.post("/signals")
 @limiter.limit("10/second")
-def ingest_signal(request: Request, signal: dict):
+def ingest(signal: dict, request: Request):
     queue.enqueue("worker.process_signal", signal)
-    return {"message": "signal queued"}
+    return {"status": "queued"}
 
 # -------------------------
-# GET ALL INCIDENTS
+# INCIDENT LIST
 # -------------------------
 @app.get("/incidents")
-def get_incidents():
+def incidents():
     db = SessionLocal()
-    incidents = db.query(Incident).all()
+    rows = db.query(Incident).all()
 
     result = []
 
-    for i in incidents:
-        mttr = None
-        if i.end_time:
-            mttr = (i.end_time - i.start_time).total_seconds()
-
+    for i in rows:
         result.append({
             "id": i.id,
             "component_id": i.component_id,
-            "status": i.status,
             "severity": i.severity,
-            "start_time": str(i.start_time),
-            "end_time": str(i.end_time) if i.end_time else None,
-            "mttr_seconds": mttr,
-            "root_cause": i.root_cause,
-            "fix_applied": i.fix_applied,
-            "prevention": i.prevention
+            "status": i.status,
+            "start_time": i.start_time,
+            "end_time": i.end_time,
+            "mttr_seconds": i.mttr_seconds
         })
 
     db.close()
     return result
 
 # -------------------------
-# UPDATE INCIDENT STATUS
+# STATUS UPDATE
 # -------------------------
-@app.put("/incidents/{incident_id}/status")
-def update_status(incident_id: int, new_status: str):
+@app.put("/incidents/{id}/status")
+def update(id: int, new_status: str):
     db = SessionLocal()
-    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    inc = db.query(Incident).filter(Incident.id == id).first()
 
-    if not incident:
-        db.close()
-        return {"error": "Incident not found"}
+    if not inc:
+        return {"error": "not found"}
 
-    valid_transitions = {
+    transitions = {
         "OPEN": ["INVESTIGATING"],
         "INVESTIGATING": ["RESOLVED"],
-        "RESOLVED": ["CLOSED"],
+        "RESOLVED": ["CLOSED"]
     }
 
-    if new_status not in valid_transitions.get(incident.status, []):
-        db.close()
-        return {"error": f"Invalid transition from {incident.status} to {new_status}"}
+    if new_status not in transitions.get(inc.status, []):
+        return {"error": "invalid transition"}
 
-    # RCA validation before closing
+    # RCA enforcement
     if new_status == "CLOSED":
-        if not incident.root_cause or not incident.fix_applied:
-            db.close()
-            return {"error": "RCA required before closing"}
+        if not inc.root_cause or not inc.fix_applied:
+            return {"error": "RCA required"}
 
-    incident.status = new_status
+        inc.end_time = datetime.utcnow()
+        inc.mttr_seconds = (inc.end_time - inc.start_time).total_seconds()
+
+    inc.status = new_status
     db.commit()
     db.close()
 
-    return {"message": "Status updated successfully"}
+    return {"status": "updated"}
 
 # -------------------------
-# SUBMIT RCA
+# RCA
 # -------------------------
-@app.post("/incidents/{incident_id}/rca")
-def submit_rca(incident_id: int, rca: dict):
+@app.post("/incidents/{id}/rca")
+def rca(id: int, data: dict):
     db = SessionLocal()
-    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    inc = db.query(Incident).filter(Incident.id == id).first()
 
-    if not incident:
-        db.close()
-        return {"error": "Incident not found"}
+    if not inc:
+        return {"error": "not found"}
 
-    incident.root_cause = rca.get("root_cause")
-    incident.fix_applied = rca.get("fix_applied")
-    incident.prevention = rca.get("prevention")
-
-    # set end time (used for MTTR)
-    incident.end_time = datetime.utcnow()
+    inc.root_cause = data.get("root_cause")
+    inc.fix_applied = data.get("fix_applied")
+    inc.prevention = data.get("prevention")
 
     db.commit()
     db.close()
 
-    return {"message": "RCA submitted successfully"}
+    return {"status": "rca saved"}
