@@ -1,25 +1,41 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from queue_config import queue
 from db_config import SessionLocal
 from models import Incident
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
+
+# Rate limiting
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from fastapi import Request
+from slowapi.errors import RateLimitExceeded
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
+# -------------------------
+# CORS (for frontend)
+# -------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-) 
+)
 
+# -------------------------
+# RATE LIMITING SETUP
+# -------------------------
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+def rate_limit_handler(request: Request, exc):
+    return JSONResponse(
+        status_code=429,
+        content={"error": "Rate limit exceeded"}
+    )
 
 # -------------------------
 # HEALTH CHECK
@@ -27,7 +43,6 @@ app.state.limiter = limiter
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
 
 # -------------------------
 # INGEST SIGNAL (QUEUE)
@@ -37,7 +52,6 @@ def health():
 def ingest_signal(request: Request, signal: dict):
     queue.enqueue("worker.process_signal", signal)
     return {"message": "signal queued"}
-
 
 # -------------------------
 # GET ALL INCIDENTS
@@ -70,7 +84,6 @@ def get_incidents():
     db.close()
     return result
 
-
 # -------------------------
 # UPDATE INCIDENT STATUS
 # -------------------------
@@ -83,19 +96,17 @@ def update_status(incident_id: int, new_status: str):
         db.close()
         return {"error": "Incident not found"}
 
-    # State transition rules
     valid_transitions = {
         "OPEN": ["INVESTIGATING"],
         "INVESTIGATING": ["RESOLVED"],
         "RESOLVED": ["CLOSED"],
     }
 
-    # Check valid transition
     if new_status not in valid_transitions.get(incident.status, []):
         db.close()
         return {"error": f"Invalid transition from {incident.status} to {new_status}"}
 
-    # Enforce RCA before closing
+    # RCA validation before closing
     if new_status == "CLOSED":
         if not incident.root_cause or not incident.fix_applied:
             db.close()
@@ -106,7 +117,6 @@ def update_status(incident_id: int, new_status: str):
     db.close()
 
     return {"message": "Status updated successfully"}
-
 
 # -------------------------
 # SUBMIT RCA
@@ -120,15 +130,14 @@ def submit_rca(incident_id: int, rca: dict):
         db.close()
         return {"error": "Incident not found"}
 
-    # Save RCA fields
     incident.root_cause = rca.get("root_cause")
     incident.fix_applied = rca.get("fix_applied")
     incident.prevention = rca.get("prevention")
 
-    # Set end time (used for MTTR)
+    # set end time (used for MTTR)
     incident.end_time = datetime.utcnow()
 
     db.commit()
     db.close()
 
-    return {"message": "RCA submitted successfully"} 
+    return {"message": "RCA submitted successfully"}
