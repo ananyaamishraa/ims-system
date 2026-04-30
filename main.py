@@ -4,6 +4,9 @@ from db_config import SessionLocal
 from models import Incident
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from fastapi import Request
 
 app = FastAPI()
 
@@ -14,6 +17,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 ) 
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
 
 # -------------------------
 # HEALTH CHECK
@@ -27,7 +33,8 @@ def health():
 # INGEST SIGNAL (QUEUE)
 # -------------------------
 @app.post("/signals")
-def ingest_signal(signal: dict):
+@limiter.limit("10/second")
+def ingest_signal(request: Request, signal: dict):
     queue.enqueue("worker.process_signal", signal)
     return {"message": "signal queued"}
 

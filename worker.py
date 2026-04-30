@@ -4,6 +4,9 @@ from pymongo import MongoClient
 from db_config import SessionLocal
 from models import Incident
 
+signal_count = 0
+start_time = time.time() 
+
 redis_conn = Redis(host="localhost", port=6379)
 
 # MongoDB setup
@@ -12,6 +15,15 @@ mongo_db = mongo_client["ims_db"]
 signals_collection = mongo_db["signals"]
 
 def process_signal(signal):
+    global signal_count, start_time
+
+    signal_count += 1
+
+    if time.time() - start_time >= 5:
+        print(f"Signals/sec: {signal_count / 5}")
+        signal_count = 0
+        start_time = time.time()
+
     component_id = signal.get("component_id")
     severity = signal.get("severity", "P2")
 
@@ -36,11 +48,29 @@ def process_signal(signal):
             status="OPEN"
         )
 
-        db.add(incident)
-        db.commit()
+        def save_incident_with_retry(db, incident, retries=3):
+            for attempt in range(retries):
+                try:
+                    db.add(incident)
+                    db.commit()
+                    return
+                except Exception as e:
+                    db.rollback()
+                    print(f"Retry {attempt+1} failed:", e)
+                    time.sleep(1)
+
+    print("Failed to save incident after retries") 
 
         print(f"[NEW INCIDENT] Stored in DB for {component_id}")
+        redis_conn.set(f"incident:{incident.id}", "ACTIVE") 
 
     db.close()
 
-    print("Signal stored in MongoDB:", signal)  
+    print("Signal stored in MongoDB:", signal)
+
+def get_severity(component):
+    mapping = {
+        "RDBMS": "P0",
+        "CACHE": "P2"
+    }
+    return mapping.get(component, "P3") 
