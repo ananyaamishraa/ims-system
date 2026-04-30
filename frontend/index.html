@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IMS Dashboard</title>
+</head>
+<body>
+
+<h1>Incident Dashboard</h1>
+
+<button onclick="loadIncidents()">Load Incidents</button>
+
+<div id="incidents"></div>
+
+<script>
+async function loadIncidents() {
+    const res = await fetch("http://127.0.0.1:8000/incidents");
+    const data = await res.json();
+
+    let html = "";
+
+    data.forEach(i => {
+        html += `
+            <div style="border:1px solid black; margin:10px; padding:10px;">
+                <p>ID: ${i.id}</p>
+                <p>Component: ${i.component_id}</p>
+                <p>Status: ${i.status}</p>
+                <p>Severity: ${i.severity}</p>
+
+                <button onclick="updateStatus(${i.id}, 'INVESTIGATING')">Investigate</button>
+                <button onclick="updateStatus(${i.id}, 'RESOLVED')">Resolve</button>
+                <button onclick="closeIncident(${i.id})">Close</button>
+            </div>
+        `;
+    });
+
+    document.getElementById("incidents").innerHTML = html;
+}
+
+async function updateStatus(id, status) {
+    await fetch(`http://127.0.0.1:8000/incidents/${id}/status?new_status=${status}`, {
+        method: "PUT"
+    });
+    loadIncidents();
+}
+
+async function closeIncident(id) {
+    const root_cause = prompt("Root cause?");
+    const fix = prompt("Fix applied?");
+    const prevention = prompt("Prevention?");
+
+    await fetch(`http://127.0.0.1:8000/incidents/${id}/rca`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            root_cause,
+            fix_applied: fix,
+            prevention
+        })
+    });
+
+    await fetch(`http://127.0.0.1:8000/incidents/${id}/status?new_status=CLOSED`, {
+        method: "PUT"
+    });
+
+    loadIncidents();
+}
+</script>
+
+</body>
+</html> 
