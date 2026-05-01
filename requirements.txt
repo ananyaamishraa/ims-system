@@ -1,0 +1,20 @@
+# Web framework
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# Rate limiting
+slowapi==0.1.9
+
+# Task queue
+redis==5.0.4
+rq==1.16.2
+
+# PostgreSQL (ORM + driver)
+sqlalchemy==2.0.30
+psycopg2-binary==2.9.9
+
+# MongoDB driver
+pymongo==4.7.2
+
+# HTTP client (used in simulate.py)
+requests==2.31.0
