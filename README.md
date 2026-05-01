@@ -18,6 +18,7 @@ A production-grade, event-driven **Incident Management System** built with **Fas
 - [Getting Started](#getting-started)
 - [Running the Simulation](#running-the-simulation)
 - [Design Patterns](#design-patterns)
+- [Docker & Dependency Notes](#docker--dependency-notes)
 
 ---
 
@@ -89,7 +90,7 @@ A simple HTML frontend is included for viewing and managing incidents.
 | Relational DB | PostgreSQL + SQLAlchemy |
 | Document Store | MongoDB + PyMongo |
 | Rate Limiting | slowapi |
-| Containerization | Docker + Docker Compose |
+| Containerization | Docker (multi-stage, slim) + Docker Compose |
 | Frontend | HTML/CSS/JS (static) |
 
 ---
@@ -109,7 +110,8 @@ ims-system/
 ├── init_db.py           # Database initializer — creates tables from ORM models
 ├── simulate.py          # Load simulator — burst traffic and RDBMS failure scenarios
 │
-├── Dockerfile           # Python 3.10 image for backend and worker services
+├── Dockerfile           # Multi-stage Python 3.10-slim image — builder + secure runtime
+├── requirements.txt     # Pinned Python dependencies for reproducible builds
 ├── docker-compose.yml   # Orchestrates: Redis, PostgreSQL, MongoDB, backend, worker
 │
 └── frontend/
@@ -278,6 +280,7 @@ Severity is assigned automatically based on the `component_id` of the incoming s
 ### Prerequisites
 
 - [Docker](https://www.docker.com/) and [Docker Compose](https://docs.docker.com/compose/) installed
+- Python 3.10+ (only needed if running `simulate.py` locally outside Docker)
 
 ### 1. Clone the repository
 
@@ -286,7 +289,15 @@ git clone https://github.com/ananyaamishraa/ims-system.git
 cd ims-system
 ```
 
-### 2. Start all services
+### 2. (Optional) Install dependencies locally
+
+Only required if you want to run `simulate.py` or any script outside of Docker:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Start all services
 
 ```bash
 docker compose up --build
@@ -301,7 +312,7 @@ This starts five containers: `redis`, `postgres`, `mongodb`, `backend`, and `wor
 | Redis | `localhost:6379` |
 | MongoDB | `localhost:27017` |
 
-### 3. Initialize the database
+### 4. Initialize the database
 
 On first run, the `backend` container handles table creation automatically. To run it manually:
 
@@ -309,14 +320,14 @@ On first run, the `backend` container handles table creation automatically. To r
 docker compose exec backend python init_db.py
 ```
 
-### 4. Verify the service
+### 5. Verify the service
 
 ```bash
 curl http://localhost:8000/health
 # {"status": "ok"}
 ```
 
-### 5. Open the frontend
+### 6. Open the frontend
 
 Open `frontend/index.html` in your browser (or serve it statically).
 
@@ -365,3 +376,27 @@ The following environment values are hardcoded for local/Docker use and should b
 - MongoDB: `mongodb://mongodb:27017/`
 
 CORS is currently open to all origins (`allow_origins=["*"]`). Restrict this in production.
+
+---
+
+## Docker & Dependency Notes
+
+The Dockerfile uses a **multi-stage build** (`builder` + `runtime`) based on `python:3.10-slim` to keep the final image lean. The `builder` stage compiles all packages (including native extensions for `psycopg2`), and only the resulting install artifacts are copied into the runtime image — no compilers or build tools ship in production.
+
+The container runs as a **non-root user** (`appuser`) for basic security hardening.
+
+All Python dependencies are declared in `requirements.txt` with **pinned versions** to ensure reproducible builds across environments:
+
+| Package | Version | Purpose |
+|---|---|---|
+| `fastapi` | 0.111.0 | Web framework |
+| `uvicorn[standard]` | 0.29.0 | ASGI server |
+| `slowapi` | 0.1.9 | Rate limiting |
+| `redis` | 5.0.4 | Redis client |
+| `rq` | 1.16.2 | Task queue |
+| `sqlalchemy` | 2.0.30 | ORM for PostgreSQL |
+| `psycopg2-binary` | 2.9.9 | PostgreSQL driver |
+| `pymongo` | 4.7.2 | MongoDB driver |
+| `requests` | 2.31.0 | HTTP client (simulate.py) |
+
+To upgrade a dependency, update its version in `requirements.txt` and rebuild: `docker compose up --build`.
