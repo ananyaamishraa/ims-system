@@ -372,7 +372,7 @@ The frontend does not send signals — that is the job of `simulate.py` or your 
 If you're running the backend on a different host or port, update the `API_URL` constant at the top of `frontend/index.html`:
 
 ```javascript
-const API_URL = "http://localhost:8000"; // change this to your backend address
+const API_URL = "http://127.0.0.1:8000"; // change this to your backend address
 ```
 
 ---
