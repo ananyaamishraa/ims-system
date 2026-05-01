@@ -9,7 +9,9 @@ from strategy import get_alert_strategy
 # -------------------------
 # CONNECTIONS (Docker-safe)
 # -------------------------
-redis_conn = Redis(host="redis", port=6379, decode_responses=True)
+
+# decode_responses must be False — RQ serialises job data as bytes internally.
+redis_conn = Redis(host="redis", port=6379, decode_responses=False)
 
 mongo_client = MongoClient("mongodb://mongodb:27017/")
 mongo_db = mongo_client["ims_db"]
@@ -18,12 +20,14 @@ signals_collection = mongo_db["signals"]
 # -------------------------
 # METRICS
 # -------------------------
+
 signal_count = 0
 start_time = time.time()
 
 # -------------------------
 # RETRY
 # -------------------------
+
 def retry(fn, retries=3):
     for i in range(retries):
         try:
@@ -34,8 +38,9 @@ def retry(fn, retries=3):
     return None
 
 # -------------------------
-# DEBOUNCE (FIXED)
+# DEBOUNCE
 # -------------------------
+
 def is_duplicate(component_id):
     key = f"debounce:{component_id}"
     count = redis_conn.incr(key)
@@ -45,11 +50,11 @@ def is_duplicate(component_id):
 # -------------------------
 # MAIN WORKER
 # -------------------------
+
 def process_signal(signal):
     global signal_count, start_time
 
     signal_count += 1
-
     if time.time() - start_time >= 5:
         print(f"📊 Signals/sec: {signal_count / 5}")
         signal_count = 0
@@ -71,24 +76,23 @@ def process_signal(signal):
 
     db = SessionLocal()
 
-    # 4. CREATE INCIDENT
-    def create():
-        incident = Incident(
-            component_id=component_id,
-            severity=severity,
-            status="OPEN",
-            start_time=datetime.datetime.utcnow()
-        )
-        db.add(incident)
-        db.commit()
-        db.refresh(incident)
-        return incident
+    # 4. CREATE INCIDENT — db session always closed via finally
+    try:
+        def create():
+            incident = Incident(
+                component_id=component_id,
+                severity=severity,
+                status="OPEN",
+                start_time=datetime.datetime.utcnow()
+            )
+            db.add(incident)
+            db.commit()
+            db.refresh(incident)
+            return incident
 
-    incident = retry(create)
-
-    if incident:
-        print(f"🟢 Incident created: {incident.id}")
-
-        redis_conn.set(f"incident:{incident.id}", "ACTIVE", ex=3600)
-
-    db.close()
+        incident = retry(create)
+        if incident:
+            print(f"🟢 Incident created: {incident.id}")
+            redis_conn.set(f"incident:{incident.id}", b"ACTIVE", ex=3600)
+    finally:
+        db.close()
