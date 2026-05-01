@@ -19,6 +19,7 @@ A production-grade, event-driven **Incident Management System** built with **Fas
 - [Running the Simulation](#running-the-simulation)
 - [Design Patterns](#design-patterns)
 - [Docker & Dependency Notes](#docker--dependency-notes)
+- [Bug Fixes Applied](#bug-fixes-applied)
 
 ---
 
@@ -376,6 +377,24 @@ The following environment values are hardcoded for local/Docker use and should b
 - MongoDB: `mongodb://mongodb:27017/`
 
 CORS is currently open to all origins (`allow_origins=["*"]`). Restrict this in production.
+
+---
+
+## Bug Fixes Applied
+
+The following bugs were identified and corrected during the code audit:
+
+**`queue_config.py` & `worker.py` — `decode_responses=True` breaks RQ**
+RQ serialises job data internally as bytes. Setting `decode_responses=True` causes the Redis client to return strings instead, which breaks job encoding at enqueue time. Fixed by setting `decode_responses=False` in both files.
+
+**`main.py` — `end_time` and `mttr_seconds` set on every status transition**
+The original code unconditionally set `end_time` and calculated `mttr_seconds` for every state change, including `OPEN → INVESTIGATING`. MTTR is only meaningful when an incident is resolved. Fixed by moving those assignments inside `if new_status == "RESOLVED"`.
+
+**`worker.py` — database session not closed on exception**
+The `db.close()` call was placed at the end of `process_signal()` with no guarantee it would execute if an unhandled exception occurred mid-function. Fixed by wrapping the incident creation block in a `try/finally` so the session is always released.
+
+**`init_db.py` — misleading unused import**
+`from models import Incident` appeared unused (pyflakes flagged it), but it was actually required as a side-effect to register the ORM model with `Base.metadata`. Fixed by changing to `import models  # noqa: F401` with an explanatory comment to make the intent explicit.
 
 ---
 
