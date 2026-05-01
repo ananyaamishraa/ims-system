@@ -1,11 +1,30 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>IMS Dashboard</title>
     <style>
         body {
-            font-family: Arial;
+            font-family: Arial, sans-serif;
             margin: 20px;
+            max-width: 900px;
+        }
+
+        h1 { margin-bottom: 10px; }
+
+        #statusBar {
+            font-size: 0.85em;
+            color: #666;
+            margin-bottom: 12px;
+            min-height: 1.2em;
+        }
+
+        #errorBar {
+            color: #c00;
+            font-weight: bold;
+            margin-bottom: 10px;
+            min-height: 1.2em;
         }
 
         .incident {
@@ -23,22 +42,43 @@
         button {
             margin-right: 5px;
             margin-top: 5px;
+            padding: 4px 10px;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
         }
 
         #detailBox {
             border: 2px solid black;
-            padding: 10px;
+            padding: 15px;
             margin-top: 20px;
+            border-radius: 8px;
         }
+
+        #detailBox h2 { margin-top: 0; }
 
         textarea {
             width: 100%;
             height: 60px;
+            box-sizing: border-box;
+            margin-bottom: 5px;
         }
 
-        input {
+        input[type="text"] {
             width: 100%;
+            box-sizing: border-box;
             margin-bottom: 5px;
+            padding: 4px;
+        }
+
+        label {
+            display: block;
+            font-weight: bold;
+            margin-top: 8px;
+            margin-bottom: 2px;
         }
     </style>
 </head>
@@ -47,146 +87,304 @@
 
 <h1>🚨 Incident Management System</h1>
 
-<button onclick="loadIncidents()">Refresh</button>
+<div id="statusBar">Loading…</div>
+<div id="errorBar"></div>
+
+<button onclick="loadIncidents()">🔄 Refresh</button>
 
 <div id="incidents"></div>
 
-<!-- INCIDENT DETAIL -->
+<!-- INCIDENT DETAIL / RCA FORM -->
 <div id="detailBox" style="display:none;">
     <h2>Incident Detail</h2>
     <div id="detailContent"></div>
 
-    <h3>Submit RCA</h3>
+    <h3>Submit RCA &amp; Close Incident</h3>
+    <p style="color:#555; font-size:0.9em;">
+        The incident must be in <strong>RESOLVED</strong> status before it can be closed.
+        Transition it to RESOLVED first, then fill this form.
+    </p>
 
-    <input id="root_cause" placeholder="Root Cause" />
-    <input id="fix_applied" placeholder="Fix Applied" />
-    <textarea id="prevention" placeholder="Prevention Steps"></textarea>
+    <label for="root_cause">Root Cause *</label>
+    <input type="text" id="root_cause" placeholder="Describe the root cause" />
 
-    <button onclick="submitRCA()">Submit RCA</button>
+    <label for="fix_applied">Fix Applied *</label>
+    <input type="text" id="fix_applied" placeholder="Describe the fix applied" />
+
+    <label for="prevention">Prevention Steps</label>
+    <textarea id="prevention" placeholder="How to prevent recurrence"></textarea>
+
+    <button onclick="submitRCA()">✅ Submit RCA &amp; Close</button>
+    <button onclick="closeDetailBox()">Cancel</button>
 </div>
 
 <script>
+    // ─────────────────────────────────────────
+    // CONFIG — change this if backend moves
+    // ─────────────────────────────────────────
+    const API_URL = "http://127.0.0.1:8000";
 
-let selectedIncident = null;
+    // valid one-way lifecycle transitions
+    const NEXT_STATUS = {
+        "OPEN":          "INVESTIGATING",
+        "INVESTIGATING": "RESOLVED",
+        "RESOLVED":      "CLOSED",
+        "CLOSED":        null
+    };
 
-// -------------------------
-// AUTO REFRESH (LIVE DASHBOARD)
-// -------------------------
-setInterval(loadIncidents, 4000);
+    let selectedIncidentId = null;
+    let refreshTimer = null;
 
-// -------------------------
-// LOAD INCIDENTS
-// -------------------------
-async function loadIncidents() {
-    const res = await fetch("http://127.0.0.1:8000/incidents");
-    let data = await res.json();
-
-    // SORT by severity (P0 highest priority)
-    const order = { "P0": 1, "P1": 2, "P2": 3, "P3": 4 };
-    data.sort((a, b) => order[a.severity] - order[b.severity]);
-
-    let html = "";
-
-    data.forEach(i => {
-        html += `
-            <div class="incident ${i.severity}">
-                <b>ID:</b> ${i.id} <br>
-                <b>Component:</b> ${i.component_id} <br>
-                <b>Status:</b> ${i.status} <br>
-                <b>Severity:</b> ${i.severity} <br>
-                <b>MTTR:</b> ${i.mttr_seconds || "-"} sec <br>
-
-                <button onclick="viewIncident(${i.id})">View</button>
-                <button onclick="updateStatus(${i.id}, 'INVESTIGATING')">Investigate</button>
-                <button onclick="updateStatus(${i.id}, 'RESOLVED')">Resolve</button>
-                <button onclick="closeIncident(${i.id})">Close</button>
-            </div>
-        `;
-    });
-
-    document.getElementById("incidents").innerHTML = html;
-}
-
-// -------------------------
-// VIEW INCIDENT DETAIL
-// -------------------------
-async function viewIncident(id) {
-    const res = await fetch("http://127.0.0.1:8000/incidents");
-    const data = await res.json();
-
-    const incident = data.find(i => i.id === id);
-    selectedIncident = id;
-
-    document.getElementById("detailBox").style.display = "block";
-
-    document.getElementById("detailContent").innerHTML = `
-        <p><b>ID:</b> ${incident.id}</p>
-        <p><b>Component:</b> ${incident.component_id}</p>
-        <p><b>Status:</b> ${incident.status}</p>
-        <p><b>Severity:</b> ${incident.severity}</p>
-        <p><b>Start:</b> ${incident.start_time}</p>
-        <p><b>End:</b> ${incident.end_time || "-"}</p>
-    `;
-}
-
-// -------------------------
-// STATUS UPDATE
-// -------------------------
-async function updateStatus(id, status) {
-    await fetch(`http://127.0.0.1:8000/incidents/${id}/status?new_status=${status}`, {
-        method: "PUT"
-    });
-
-    loadIncidents();
-}
-
-// -------------------------
-// CLOSE INCIDENT FLOW
-// -------------------------
-async function closeIncident(id) {
-    selectedIncident = id;
-
-    document.getElementById("detailBox").style.display = "block";
-
-    alert("Please fill RCA in the form below before closing.");
-}
-
-// -------------------------
-// SUBMIT RCA
-// -------------------------
-async function submitRCA() {
-
-    const root_cause = document.getElementById("root_cause").value;
-    const fix_applied = document.getElementById("fix_applied").value;
-    const prevention = document.getElementById("prevention").value;
-
-    if (!root_cause || !fix_applied) {
-        alert("RCA incomplete!");
-        return;
+    // ─────────────────────────────────────────
+    // HELPERS
+    // ─────────────────────────────────────────
+    function esc(str) {
+        // Prevent XSS when rendering server data into innerHTML
+        return String(str ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
     }
 
-    await fetch(`http://127.0.0.1:8000/incidents/${selectedIncident}/rca`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            root_cause,
-            fix_applied,
-            prevention
-        })
-    });
+    function setStatus(msg) {
+        document.getElementById("statusBar").textContent = msg;
+    }
 
-    await fetch(`http://127.0.0.1:8000/incidents/${selectedIncident}/status?new_status=CLOSED`, {
-        method: "PUT"
-    });
+    function setError(msg) {
+        document.getElementById("errorBar").textContent = msg;
+    }
 
-    alert("Incident Closed Successfully");
+    function formatMTTR(seconds) {
+        if (seconds == null) return "—";
+        const s = Math.round(seconds);
+        if (s < 60)   return `${s}s`;
+        if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+        return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+    }
 
-    document.getElementById("detailBox").style.display = "none";
+    // ─────────────────────────────────────────
+    // AUTO REFRESH — pauses while detail box is open
+    // ─────────────────────────────────────────
+    function startAutoRefresh() {
+        stopAutoRefresh();
+        refreshTimer = setInterval(() => {
+            // Don't refresh the list while the user is filling the RCA form
+            if (document.getElementById("detailBox").style.display === "none") {
+                loadIncidents(true);
+            }
+        }, 5000);
+    }
 
+    function stopAutoRefresh() {
+        if (refreshTimer) {
+            clearInterval(refreshTimer);
+            refreshTimer = null;
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // LOAD INCIDENTS
+    // ─────────────────────────────────────────
+    async function loadIncidents(silent = false) {
+        if (!silent) setStatus("Loading incidents…");
+        setError("");
+
+        try {
+            const res = await fetch(`${API_URL}/incidents`);
+            if (!res.ok) throw new Error(`Server returned ${res.status}`);
+            const data = await res.json();
+
+            // Sort by severity (P0 = highest priority)
+            const order = { P0: 1, P1: 2, P2: 3, P3: 4 };
+            data.sort((a, b) => (order[a.severity] ?? 5) - (order[b.severity] ?? 5));
+
+            renderIncidents(data);
+            setStatus(`Last updated: ${new Date().toLocaleTimeString()} — ${data.length} incident(s)`);
+        } catch (err) {
+            setError(`Failed to load incidents: ${err.message}`);
+            setStatus("");
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // RENDER INCIDENTS
+    // ─────────────────────────────────────────
+    function renderIncidents(data) {
+        if (data.length === 0) {
+            document.getElementById("incidents").innerHTML = "<p>No incidents found.</p>";
+            return;
+        }
+
+        let html = "";
+
+        data.forEach(inc => {
+            const next = NEXT_STATUS[inc.status];
+
+            // Show only the valid next-step button, plus View and Close (if RESOLVED)
+            const investigateBtn = inc.status === "OPEN"
+                ? `<button onclick="updateStatus(${inc.id}, 'INVESTIGATING')">🔍 Investigate</button>`
+                : `<button disabled>🔍 Investigate</button>`;
+
+            const resolveBtn = inc.status === "INVESTIGATING"
+                ? `<button onclick="updateStatus(${inc.id}, 'RESOLVED')">✔ Resolve</button>`
+                : `<button disabled>✔ Resolve</button>`;
+
+            const closeBtn = inc.status === "RESOLVED"
+                ? `<button onclick="openCloseFlow(${inc.id})">🔒 Close</button>`
+                : `<button disabled>🔒 Close</button>`;
+
+            html += `
+                <div class="incident ${esc(inc.severity)}">
+                    <b>ID:</b> ${esc(inc.id)} &nbsp;
+                    <b>Component:</b> ${esc(inc.component_id)} &nbsp;
+                    <b>Severity:</b> ${esc(inc.severity)} &nbsp;
+                    <b>Status:</b> ${esc(inc.status)} &nbsp;
+                    <b>MTTR:</b> ${formatMTTR(inc.mttr_seconds)}
+                    <br>
+                    <button onclick="viewIncident(${inc.id})">🔎 View</button>
+                    ${investigateBtn}
+                    ${resolveBtn}
+                    ${closeBtn}
+                </div>
+            `;
+        });
+
+        document.getElementById("incidents").innerHTML = html;
+    }
+
+    // ─────────────────────────────────────────
+    // VIEW INCIDENT DETAIL
+    // ─────────────────────────────────────────
+    async function viewIncident(id) {
+        setError("");
+        try {
+            // Fetch only this incident's data from the list endpoint
+            // (no dedicated GET /incidents/{id} exists in the API)
+            const res = await fetch(`${API_URL}/incidents`);
+            if (!res.ok) throw new Error(`Server returned ${res.status}`);
+            const data = await res.json();
+            const inc = data.find(i => i.id === id);
+
+            if (!inc) {
+                setError(`Incident #${id} not found.`);
+                return;
+            }
+
+            document.getElementById("detailContent").innerHTML = `
+                <p><b>ID:</b> ${esc(inc.id)}</p>
+                <p><b>Component:</b> ${esc(inc.component_id)}</p>
+                <p><b>Severity:</b> ${esc(inc.severity)}</p>
+                <p><b>Status:</b> ${esc(inc.status)}</p>
+                <p><b>Start:</b> ${esc(inc.start_time)}</p>
+                <p><b>End:</b> ${inc.end_time ? esc(inc.end_time) : "—"}</p>
+                <p><b>MTTR:</b> ${formatMTTR(inc.mttr_seconds)}</p>
+            `;
+
+            document.getElementById("detailBox").style.display = "block";
+        } catch (err) {
+            setError(`Failed to load incident detail: ${err.message}`);
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // STATUS UPDATE
+    // ─────────────────────────────────────────
+    async function updateStatus(id, newStatus) {
+        setError("");
+        try {
+            const res = await fetch(`${API_URL}/incidents/${id}/status?new_status=${newStatus}`, {
+                method: "PUT"
+            });
+            const data = await res.json();
+
+            if (data.error) {
+                setError(`Status update failed: ${data.error}`);
+            }
+
+            await loadIncidents();
+        } catch (err) {
+            setError(`Failed to update status: ${err.message}`);
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // OPEN CLOSE FLOW (shows RCA form)
+    // ─────────────────────────────────────────
+    function openCloseFlow(id) {
+        selectedIncidentId = id;
+        clearRCAForm();
+
+        document.getElementById("detailContent").innerHTML =
+            `<p>Filing RCA for Incident <b>#${esc(id)}</b>. Fill the form below then click Submit.</p>`;
+
+        document.getElementById("detailBox").style.display = "block";
+        document.getElementById("root_cause").focus();
+    }
+
+    function closeDetailBox() {
+        document.getElementById("detailBox").style.display = "none";
+        selectedIncidentId = null;
+        clearRCAForm();
+    }
+
+    function clearRCAForm() {
+        document.getElementById("root_cause").value = "";
+        document.getElementById("fix_applied").value = "";
+        document.getElementById("prevention").value = "";
+    }
+
+    // ─────────────────────────────────────────
+    // SUBMIT RCA + CLOSE
+    // ─────────────────────────────────────────
+    async function submitRCA() {
+        setError("");
+
+        const root_cause = document.getElementById("root_cause").value.trim();
+        const fix_applied = document.getElementById("fix_applied").value.trim();
+        const prevention = document.getElementById("prevention").value.trim();
+
+        if (!root_cause || !fix_applied) {
+            setError("Root Cause and Fix Applied are required before closing.");
+            return;
+        }
+
+        if (!selectedIncidentId) {
+            setError("No incident selected.");
+            return;
+        }
+
+        try {
+            // Step 1: Submit RCA
+            const rcaRes = await fetch(`${API_URL}/incidents/${selectedIncidentId}/rca`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ root_cause, fix_applied, prevention })
+            });
+            const rcaData = await rcaRes.json();
+            if (rcaData.error) throw new Error(`RCA submission failed: ${rcaData.error}`);
+
+            // Step 2: Transition to CLOSED
+            const closeRes = await fetch(
+                `${API_URL}/incidents/${selectedIncidentId}/status?new_status=CLOSED`,
+                { method: "PUT" }
+            );
+            const closeData = await closeRes.json();
+            if (closeData.error) throw new Error(`Close failed: ${closeData.error}`);
+
+            closeDetailBox();
+            await loadIncidents();
+            setStatus(`Incident #${selectedIncidentId} closed successfully.`);
+        } catch (err) {
+            setError(err.message);
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // INIT
+    // ─────────────────────────────────────────
     loadIncidents();
-}
-
-loadIncidents();
+    startAutoRefresh();
 
 </script>
 
