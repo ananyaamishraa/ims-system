@@ -16,6 +16,7 @@ A production-grade, event-driven **Incident Management System** built with **Fas
 - [Incident Lifecycle](#incident-lifecycle)
 - [Severity Classification](#severity-classification)
 - [Getting Started](#getting-started)
+- [Frontend Dashboard](#frontend-dashboard)
 - [Running the Simulation](#running-the-simulation)
 - [Design Patterns](#design-patterns)
 - [Docker & Dependency Notes](#docker--dependency-notes)
@@ -330,7 +331,49 @@ curl http://localhost:8000/health
 
 ### 6. Open the frontend
 
-Open `frontend/index.html` in your browser (or serve it statically).
+See the [Frontend Dashboard](#frontend-dashboard) section below for full details.
+
+---
+
+## Frontend Dashboard
+
+The frontend is a lightweight, zero-dependency static HTML page located at `frontend/index.html`. It requires no build step or package manager — just open it directly in a browser while the backend is running.
+
+### How to open it
+
+```bash
+# Option A — open directly in browser (no server needed)
+open frontend/index.html       # macOS
+xdg-open frontend/index.html   # Linux
+
+# Option B — serve via Python for cleaner local dev
+python -m http.server 3000 --directory frontend
+# then visit http://localhost:3000
+```
+
+> The backend must be running on `http://localhost:8000` for the dashboard to work. Start it with `docker compose up` first.
+
+### What it does
+
+The dashboard communicates with the FastAPI backend over the REST API and provides a single-page interface for:
+
+**Viewing all incidents** — fetches `GET /incidents` on load and renders a table showing each incident's ID, component, severity, current status, start time, and MTTR (once resolved).
+
+**Updating incident status** — allows transitioning an incident through its lifecycle (`OPEN → INVESTIGATING → RESOLVED → CLOSED`) via `PUT /incidents/{id}/status`. Invalid transitions are rejected by the backend and surfaced as error messages.
+
+**Filing an RCA** — provides a form to submit root cause, fix applied, and prevention notes via `POST /incidents/{id}/rca`. Required before an incident can be closed.
+
+### What it does NOT do
+
+The frontend does not send signals — that is the job of `simulate.py` or your own integrations via `POST /signals`. The dashboard is purely a management and review interface.
+
+### Connecting to a different backend URL
+
+If you're running the backend on a different host or port, update the `API_URL` constant at the top of `frontend/index.html`:
+
+```javascript
+const API_URL = "http://localhost:8000"; // change this to your backend address
+```
 
 ---
 
